@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -13,9 +14,7 @@ import requests
 # Konfiguration
 # ============================================================
 
-SOURCE_URL = (
-    "https://esf.bolle.schule/oeffentlich/kalender/termine"
-)
+SOURCE_URL = "https://esf.bolle.schule/oeffentlich/kalender/termine"
 
 OUTPUT_FILE = Path("esf-bolle-kalender.ics")
 TEMP_FILE = Path("esf-bolle-kalender.tmp")
@@ -31,6 +30,8 @@ SOURCE_DESCRIPTION = (
     "Quelle: Öffentlicher BOLLE-Kalender "
     "der Evangelischen Schule Frohnau"
 )
+
+LOCAL_TIMEZONE = ZoneInfo("Europe/Berlin")
 
 REQUEST_TIMEOUT_SECONDS = 30
 MINIMUM_EXPECTED_EVENTS = 1
@@ -70,15 +71,10 @@ def escape_ics_text(value: Any) -> str:
 
     text = str(value)
 
-    # Backslashes zuerst maskieren.
     text = text.replace("\\", "\\\\")
-
-    # Zeilenumbrüche vereinheitlichen.
     text = text.replace("\r\n", "\\n")
     text = text.replace("\r", "\\n")
     text = text.replace("\n", "\\n")
-
-    # Sonderzeichen maskieren.
     text = text.replace(";", "\\;")
     text = text.replace(",", "\\,")
 
@@ -88,8 +84,7 @@ def escape_ics_text(value: Any) -> str:
 def fold_ics_line(
     line: str,
     limit: int = 73,
-) -> list[str]:
-    """
+) -> list"""
     Faltet lange ICS-Zeilen.
 
     Fortsetzungszeilen beginnen gemäß iCalendar-Standard
@@ -108,7 +103,6 @@ def fold_ics_line(
             if current_line:
                 folded_lines.append(current_line)
 
-            # Fortsetzungszeilen beginnen mit einem Leerzeichen.
             current_line = " " + character
         else:
             current_line = candidate
@@ -123,7 +117,7 @@ def add_ics_line(
     lines: list[str],
     line: str,
 ) -> None:
-    """Fügt eine ICS-Zeile mit erforderlicher Zeilenfaltung hinzu."""
+    """Fügt eine ICS-Zeile einschließlich Zeilenfaltung hinzu."""
     lines.extend(fold_ics_line(line))
 
 
@@ -152,16 +146,18 @@ def format_all_day_date(value: str) -> str:
     return parse_bolle_datetime(value).strftime("%Y%m%d")
 
 
-def format_local_datetime(value: str) -> str:
+def format_utc_datetime(value: str) -> str:
     """
-    Formatiert einen Zeitpunkt als lokale Uhrzeit für Europe/Berlin.
-
-    BOLLE liefert die Uhrzeiten bereits als lokale Berliner Zeit.
-    Deshalb erfolgt hier keine Umrechnung nach UTC.
+    Interpretiert eine von BOLLE gelieferte Uhrzeit als Berliner Ortszeit
+    und wandelt sie für die ICS-Datei in UTC um.
     """
-    return parse_bolle_datetime(value).strftime(
-        "%Y%m%dT%H%M%S"
+    local_datetime = parse_bolle_datetime(value).replace(
+        tzinfo=LOCAL_TIMEZONE
     )
+
+    utc_datetime = local_datetime.astimezone(timezone.utc)
+
+    return utc_datetime.strftime("%Y%m%dT%H%M%SZ")
 
 
 # ============================================================
@@ -170,7 +166,7 @@ def format_local_datetime(value: str) -> str:
 
 def build_uid(event: dict[str, Any]) -> str:
     """
-    Erzeugt eine stabile UID für einen Termin.
+    Erzeugt eine dauerhaft stabile UID.
 
     Bevorzugt wird die BOLLE-ID verwendet. Sollte keine ID vorhanden
     sein, wird aus Titel, Beginn und Ende ein stabiler Hash erzeugt.
@@ -192,10 +188,7 @@ def build_uid(event: dict[str, Any]) -> str:
         fallback_value.encode("utf-8")
     ).hexdigest()[:24]
 
-    return (
-        f"bolle-esf-{fallback_hash}"
-        "@esf.bolle.schule"
-    )
+    return f"bolle-esf-{fallback_hash}@esf.bolle.schule"
 
 
 def get_extended_property(
@@ -209,10 +202,7 @@ def get_extended_property(
     if not isinstance(extended_props, dict):
         return default
 
-    value = extended_props.get(
-        property_name,
-        default,
-    )
+    value = extended_props.get(property_name, default)
 
     if value is None:
         return default
@@ -220,14 +210,10 @@ def get_extended_property(
     return value
 
 
-def build_description(
-    event: dict[str, Any],
-) -> str:
+def build_description(event: dict[str, Any]) -> str:
     """
-    Erstellt die Terminbeschreibung.
-
-    Ein vorhandener BOLLE-Kommentar wird übernommen.
-    Zusätzlich wird ein Quellenhinweis ergänzt.
+    Erstellt die Terminbeschreibung aus dem BOLLE-Kommentar
+    und einem Quellenhinweis.
     """
     comment = str(
         get_extended_property(
@@ -246,3 +232,208 @@ def build_description(
         description = SOURCE_DESCRIPTION
 
     return escape_ics_text(description)
+
+
+def validate_event(event: Any) -> bool:
+    """Prüft, ob ein Datensatz als Termin verarbeitet werden kann."""
+    if not isinstance(event, dict):
+        return False
+
+    required_fields = (
+        "title",
+        "start",
+        "end",
+    )
+
+    for field in required_fields:
+        if not event.get(field):
+            return False
+
+    return True
+
+
+# ============================================================
+# Datenabruf
+# ============================================================
+
+def download_events() -> list[dict[str, Any]]:
+    """Ruft die aktuellen Termine vom öffentlichen BOLLE-Endpunkt ab."""
+    log(f"Rufe Termine ab: {SOURCE_URL}")
+
+    response = requests.get(
+        SOURCE_URL,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "kaboll-calendar-generator/1.0",
+        },
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    if not isinstance(data, list):
+        raise ValueError(
+            "Die Antwort des BOLLE-Endpunkts ist kein JSON-Array."
+        )
+
+    if len(data) < MINIMUM_EXPECTED_EVENTS:
+        raise ValueError(
+            "Die BOLLE-Antwort enthält keine Termine. "
+            "Eine vorhandene ICS-Datei wird nicht überschrieben."
+        )
+
+    valid_events = [
+        event
+        for event in data
+        if validate_event(event)
+    ]
+
+    invalid_count = len(data) - len(valid_events)
+
+    if not valid_events:
+        raise ValueError(
+            "Keiner der abgerufenen Datensätze kann "
+            "als Termin verarbeitet werden."
+        )
+
+    log(f"{len(data)} Datensätze abgerufen.")
+    log(f"{len(valid_events)} gültige Termine erkannt.")
+
+    if invalid_count:
+        log(
+            f"Warnung: {invalid_count} ungültige Datensätze "
+            "werden übersprungen."
+        )
+
+    return valid_events
+
+
+# ============================================================
+# Einzelne Termine erzeugen
+# ============================================================
+
+def build_event_lines(
+    event: dict[str, Any],
+    generation_timestamp: str,
+) -> list"""Erzeugt den VEVENT-Block für einen BOLLE-Termin."""
+    lines: list[str] = []
+
+    uid = build_uid(event)
+
+    title = escape_ics_text(
+        event.get("title", "Termin")
+    )
+
+    description = build_description(event)
+
+    location = escape_ics_text(
+        get_extended_property(
+            event,
+            "ort",
+            "",
+        )
+    )
+
+    start_value = str(event["start"])
+    end_value = str(event["end"])
+
+    is_all_day = bool(
+        event.get("allDay", False)
+    )
+
+    add_ics_line(lines, "BEGIN:VEVENT")
+    add_ics_line(lines, f"UID:{uid}")
+    add_ics_line(lines, f"DTSTAMP:{generation_timestamp}")
+    add_ics_line(lines, f"LAST-MODIFIED:{generation_timestamp}")
+
+    if is_all_day:
+        start_date = format_all_day_date(start_value)
+        end_date = format_all_day_date(end_value)
+
+        add_ics_line(
+            lines,
+            f"DTSTART;VALUE=DATE:{start_date}",
+        )
+
+        add_ics_line(
+            lines,
+            f"DTEND;VALUE=DATE:{end_date}",
+        )
+
+        add_ics_line(
+            lines,
+            "X-MICROSOFT-CDO-ALLDAYEVENT:TRUE",
+        )
+
+    else:
+        start_datetime = format_utc_datetime(start_value)
+        end_datetime = format_utc_datetime(end_value)
+
+        add_ics_line(
+            lines,
+            f"DTSTART:{start_datetime}",
+        )
+
+        add_ics_line(
+            lines,
+            f"DTEND:{end_datetime}",
+        )
+
+        add_ics_line(
+            lines,
+            "X-MICROSOFT-CDO-ALLDAYEVENT:FALSE",
+        )
+
+    add_ics_line(
+        lines,
+        f"SUMMARY:{title}",
+    )
+
+    add_ics_line(
+        lines,
+        f"DESCRIPTION:{description}",
+    )
+
+    add_ics_line(
+        lines,
+        f"LOCATION:{location}",
+    )
+
+    add_ics_line(
+        lines,
+        "STATUS:CONFIRMED",
+    )
+
+    add_ics_line(
+        lines,
+        "TRANSP:TRANSPARENT",
+    )
+
+    add_ics_line(
+        lines,
+        "CLASS:PUBLIC",
+    )
+
+    add_ics_line(
+        lines,
+        "SEQUENCE:0",
+    )
+
+    add_ics_line(
+        lines,
+        f"URL:{SOURCE_URL}",
+    )
+
+    add_ics_line(
+        lines,
+        "END:VEVENT",
+    )
+
+    return lines
+
+
+# ============================================================
+# Vollständigen Kalender erzeugen
+# =======================
