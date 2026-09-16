@@ -2,20 +2,21 @@ name: Update ESF Calendar
 
 on:
   schedule:
-    # Täglich um 04:00 Uhr UTC.
-    # Das entspricht je nach Sommer- oder Winterzeit
-    # 05:00 oder 06:00 Uhr in Deutschland.
     - cron: "0 4 * * *"
-
-  # Ermöglicht einen manuellen Testlauf.
   workflow_dispatch:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
 
 jobs:
-  update:
-    name: Create and publish ICS calendar
+  update-calendar:
+    name: Build and publish ESF ICS calendar
     runs-on: ubuntu-latest
 
     steps:
@@ -28,7 +29,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: python -m pip install --upgrade requests
+        run: python -m pip install --upgrade pip requests tzdata
 
       - name: Check Python syntax
         run: python -m py_compile create_ics.py
@@ -39,18 +40,22 @@ jobs:
       - name: Validate generated file
         shell: bash
         run: |
-          test -f esf-bolle-kalender.ics
-          grep -q "^BEGIN:VCALENDAR" esf-bolle-kalender.ics
-          grep -q "^BEGIN:VEVENT" esf-bolle-kalender.ics
-          grep -q "^END:VCALENDAR" esf-bolle-kalender.ics
-          echo "ICS file passed basic validation."
+          python - <<'PY'
+          from pathlib import Path
+          content = Path('esf-bolle-kalender.ics').read_text(encoding='utf-8')
+          assert content.startswith('BEGIN:VCALENDAR')
+          assert content.rstrip('\r\n').endswith('END:VCALENDAR')
+          assert 'BEGIN:VEVENT' in content
+          assert content.count('BEGIN:VEVENT') == content.count('END:VEVENT')
+          assert content.count('BEGIN:VEVENT') >= 1
+          print('ICS validation passed.')
+          PY
 
       - name: Commit updated calendar
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add esf-bolle-kalender.ics
 
           if git diff --cached --quiet; then
@@ -59,3 +64,24 @@ jobs:
             git commit -m "Update ESF calendar"
             git push
           fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy-pages:
+    name: Deploy calendar to GitHub Pages
+    needs: update-calendar
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
