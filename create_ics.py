@@ -116,12 +116,13 @@ def get_extended_property(event: dict[str, Any], property_name: str, default: An
     return value
 
 
-def build_description(event: dict[str, Any]) -> str:
+def build_description(event: dict[str, Any], last_updated: str) -> str:
     comment = str(get_extended_property(event, "kommentar", "")).strip()
     description_parts = []
     if comment:
         description_parts.append(comment)
     description_parts.append(SOURCE_DESCRIPTION)
+    description_parts.append(f"Zuletzt aktualisiert: {last_updated}")
     return escape_ics_text("\n\n".join(description_parts))
 
 
@@ -196,11 +197,15 @@ def event_sort_key(event: dict[str, Any]) -> tuple[datetime, datetime, tuple[int
         return (start, end, (2, 0), str(event_id))
 
 
-def build_event_lines(event: dict[str, Any], generation_timestamp: str) -> list[str]:
+def build_event_lines(
+    event: dict[str, Any],
+    generation_timestamp: str,
+    last_updated: str,
+) -> list[str]:
     lines: list[str] = []
     uid = build_uid(event)
     title = escape_ics_text(event.get("title", "Termin"))
-    description = build_description(event)
+    description = build_description(event, last_updated)
     location = escape_ics_text(get_extended_property(event, "ort", ""))
     start_value = str(event["start"])
     end_value = str(event["end"])
@@ -243,7 +248,11 @@ def validate_calendar_content(content: str) -> None:
 
 
 def build_calendar(events: list[dict[str, Any]]) -> str:
-    generation_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    generated_at = datetime.now(timezone.utc)
+    generation_timestamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
+    last_updated = generated_at.astimezone(LOCAL_TIMEZONE).strftime(
+        "%d.%m.%Y %H:%M Uhr"
+    )
     sorted_events = sorted(events, key=event_sort_key)
 
     lines = [
@@ -260,7 +269,7 @@ def build_calendar(events: list[dict[str, Any]]) -> str:
     ]
 
     for event in sorted_events:
-        lines.extend(build_event_lines(event, generation_timestamp))
+        lines.extend(build_event_lines(event, generation_timestamp, last_updated))
 
     lines.append("END:VCALENDAR")
     calendar = CRLF.join(lines) + CRLF
