@@ -246,6 +246,3 @@ def build_description(
         description = SOURCE_DESCRIPTION
 
     return escape_ics_text(description)
-
-
-def 
