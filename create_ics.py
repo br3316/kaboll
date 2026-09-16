@@ -88,7 +88,8 @@ def escape_ics_text(value: Any) -> str:
 def fold_ics_line(
     line: str,
     limit: int = 73,
-) -> list"""
+) -> list[str]:
+    """
     Faltet lange ICS-Zeilen.
 
     Fortsetzungszeilen beginnen gemäß iCalendar-Standard
