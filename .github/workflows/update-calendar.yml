@@ -2,7 +2,10 @@ name: Update ESF Calendar
 
 on:
   schedule:
-    - cron: "0 4 * * *"
+    # 05:00 und 17:00 deutscher Zeit während der Sommerzeit (CEST).
+    # GitHub Actions wertet Cron immer in UTC aus; im Winter (CET)
+    # läuft der Workflow deshalb um 04:00 und 16:00 deutscher Zeit.
+    - cron: "0 3,15 * * *"
   workflow_dispatch:
 
 permissions:
